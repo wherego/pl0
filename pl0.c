@@ -8,7 +8,8 @@
 #include <ctype.h>
 
 #define MAX_ID_LENGTH (256u)
-#define MAX_CORE (1024u)
+#define MAX_CORE      (1024u)
+#define VERSION       (1)
 
 /* EBNF Grammar (from Wikipedia)
  *
@@ -120,6 +121,7 @@ typedef struct {
 		char *id;
 		int number;
 	} p;
+	unsigned location;
 } token_t;
 
 typedef struct {
@@ -128,6 +130,7 @@ typedef struct {
 	int c;
 	char id[MAX_ID_LENGTH];
 	int number;
+	int debug;
 	token_t *unget;
 	token_t *token;
 	token_t *accepted;
@@ -206,11 +209,12 @@ int _syntax_error(lexer_t *l, const char *file, const char *func, unsigned line,
 
 #define syntax_error(L, MSG) _syntax_error((L), __FILE__, __func__, __LINE__, (MSG))
 
-lexer_t *new_lexer(FILE *input)
+lexer_t *new_lexer(FILE *input, int debug)
 {
 	lexer_t *r = allocate(sizeof(*r));
 	r->input = input;
 	r->line = 1;
+	r->debug = debug;
 	return r;
 }
 
@@ -351,7 +355,6 @@ typedef enum {
 	UNARY_EXPRESSION, 
 	TERM, 
 	FACTOR,
-
 } parse_e;
 
 const char *names[] = {
@@ -381,10 +384,11 @@ typedef struct node_t {
 	struct node_t *o1, *o2, *o3, *o4;
 } node_t;
 
-node_t *new_node(parse_e type)
+node_t *new_node(lexer_t *l, parse_e type)
 {
 	node_t *r = allocate(sizeof(*r));
-	fprintf(stderr, "debug> %s\n", names[type]);
+	if(l->debug)
+		fprintf(stderr, "new> %s\n", names[type]);
 	r->type = type;
 	return r;
 }
@@ -448,7 +452,7 @@ node_t *unary_expression(lexer_t *l);
 
 node_t *factor(lexer_t *l) /* ident | number | "(" unary-expression ")". */
 {
-	node_t *r = new_node(FACTOR);
+	node_t *r = new_node(l, FACTOR);
 	if(accept(l, IDENTIFIER) || accept(l, NUMBER)) { 
 		r->token = l->accepted;
 		return r;
@@ -463,7 +467,7 @@ node_t *factor(lexer_t *l) /* ident | number | "(" unary-expression ")". */
 
 node_t *term(lexer_t *l) /* factor {("*"|"/") factor}. */
 {
-	node_t *r = new_node(TERM);
+	node_t *r = new_node(l, TERM);
 	r->o1 = factor(l);
 	if(accept(l, MUL) || accept(l, DIV)) {
 		r->token = l->accepted;
@@ -476,7 +480,7 @@ node_t *term(lexer_t *l) /* factor {("*"|"/") factor}. */
 node_t *expression(lexer_t *l) /* { ("+"|"-") term}. */
 {
 	if(accept(l, ADD) || accept(l, SUB)) {
-		node_t *r = new_node(EXPRESSION);
+		node_t *r = new_node(l, EXPRESSION);
 		r->token = l->accepted;
 		r->o1 = term(l);
 		return r;
@@ -487,7 +491,7 @@ node_t *expression(lexer_t *l) /* { ("+"|"-") term}. */
 
 node_t *unary_expression(lexer_t *l) /* [ "+"|"-"] term expression. */
 {
-	node_t *r = new_node(UNARY_EXPRESSION);
+	node_t *r = new_node(l, UNARY_EXPRESSION);
 	if(accept(l, ADD) || accept(l, SUB))
 		r->token = l->accepted;
 	r->o1 = term(l);
@@ -497,7 +501,7 @@ node_t *unary_expression(lexer_t *l) /* [ "+"|"-"] term expression. */
 
 node_t *condition(lexer_t *l)
 {
-	node_t *r = new_node(CONDITION);
+	node_t *r = new_node(l, CONDITION);
 	if(accept(l, ODD)) { /* "odd" unary_expression */
 		r->o1 = unary_expression(l);
 		r->token = l->accepted;
@@ -518,7 +522,7 @@ node_t *statement(lexer_t *l);
 
 node_t *list(lexer_t *l)
 {
-	node_t *r = new_node(LIST);
+	node_t *r = new_node(l, LIST);
 	r->o1 = statement(l);
 	if(accept(l, SEMICOLON))
 		r->o2 = list(l);
@@ -527,7 +531,7 @@ node_t *list(lexer_t *l)
 
 node_t *statement(lexer_t *l)
 {
-	node_t *r = new_node(STATEMENT);
+	node_t *r = new_node(l, STATEMENT);
 	if(accept(l, IDENTIFIER)) { /* ident ":=" unary_expression */
 		r->token = l->accepted;
 		expect(l, ASSIGN);
@@ -568,7 +572,7 @@ node_t *statement(lexer_t *l)
 
 node_t *constlist(lexer_t *l) /* "const" ident "=" number {"," ident "=" number} ";" */
 {
-	node_t *r = new_node(CONSTLIST);
+	node_t *r = new_node(l, CONSTLIST);
 	expect(l, IDENTIFIER);
 	r->token = l->accepted;
 	expect(l, EQUAL);
@@ -581,7 +585,7 @@ node_t *constlist(lexer_t *l) /* "const" ident "=" number {"," ident "=" number}
 
 node_t *varlist(lexer_t *l) /* "var" ident {"," ident} ";"  */
 {
-	node_t *r = new_node(VARLIST);
+	node_t *r = new_node(l, VARLIST);
 	expect(l, IDENTIFIER);
 	r->token = l->accepted;
 	if(accept(l, COMMA))
@@ -593,7 +597,7 @@ node_t *block(lexer_t *l);
 
 node_t *proclist(lexer_t *l)
 {
-	node_t *r = new_node(PROCLIST);
+	node_t *r = new_node(l, PROCLIST);
 	expect(l, IDENTIFIER);
 	r->token = l->accepted;
 	expect(l, SEMICOLON);
@@ -606,7 +610,7 @@ node_t *proclist(lexer_t *l)
 
 node_t *block(lexer_t *l)
 {
-	node_t *r = new_node(BLOCK);
+	node_t *r = new_node(l, BLOCK);
 	if(accept(l, CONST)) { /* [ constlist ] */
 		r->o1 = constlist(l);
 		expect(l, SEMICOLON);
@@ -625,7 +629,7 @@ node_t *block(lexer_t *l)
 
 node_t *program(lexer_t *l)
 {
-	node_t *r = new_node(PROGRAM);
+	node_t *r = new_node(l, PROGRAM);
 	lexer(l);
 	r->o1 = block(l);
 	if(accept(l, EOI))
@@ -636,7 +640,8 @@ node_t *program(lexer_t *l)
 
 typedef struct {
 	char m[MAX_CORE];
-	unsigned index;
+	unsigned here;
+	unsigned globals;
 } code_t;
 
 typedef struct scope_t {
@@ -647,18 +652,43 @@ typedef struct scope_t {
 } scope_t;
 
 typedef enum {
-	ILOAD, ISTORE, ICALL, IRETURN, IBRANCH, INBRANCH, IADD, ISUB, IMUL, IDIV,
-	ILTE, IGTE, ILT, IGT, IEQ, INEQ, IPUSH, IPOP, IREAD, IWRITE, IHALT
+	ILOAD, ISTORE, ICALL, IRETURN, IJ, IJZ, IADD, ISUB, IMUL, IDIV,
+	ILTE, IGTE, ILT, IGT, IEQ, INEQ, IODD, IPUSH, IPOP, IREAD, IWRITE, IHALT
 } instruction;
+
+const char *inames[] = {
+	[ILOAD]     =  "load",
+	[ISTORE]    =  "store",
+	[ICALL]     =  "call",
+	[IRETURN]   =  "return",
+	[IJ]        =  "j",
+	[IJZ]       =  "jz",
+	[IADD]      =  "+",
+	[ISUB]      =  "-",
+	[IMUL]      =  "*",
+	[IDIV]      =  "/",
+	[ILTE]      =  "<=",
+	[IGTE]      =  ">=",
+	[ILT]       =  "<",
+	[IGT]       =  ">",
+	[IEQ]       =  "=",
+	[INEQ]      =  "#",
+	[IODD]      =  "odd",
+	[IPUSH]     =  "push",
+	[IPOP]      =  "pop",
+	[IREAD]     =  "read",
+	[IWRITE]    =  "write",
+	[IHALT]     =  "halt",
+};
 
 void generate(code_t *c, instruction i)
 {
-	c->m[c->index++] = i;
+	c->m[c->here++] = i;
 }
 
 unsigned hole(code_t *c) 
 {
-	return c->index++;
+	return c->here++;
 }
 
 void fix(code_t *c, unsigned hole, unsigned patch)
@@ -669,6 +699,7 @@ void fix(code_t *c, unsigned hole, unsigned patch)
 code_t *new_code(void)
 {
 	code_t *r = allocate(sizeof(*r));
+	r->globals = MAX_CORE - 1; /* data stored at end of core*/
 	return r;
 }
 
@@ -683,20 +714,66 @@ void free_scope(scope_t *s)
 {
 	if(!s)
 		return;
-	free_node(s->constants);
-	free_node(s->variables);
-	free_node(s->functions);
 	free(s);
+}
+
+void _code_error(node_t *n, const char *file, const char *func, unsigned line, const char *msg)
+{
+	fprintf(stderr, "%s:%s:%u\n", file, func, line);
+	fprintf(stderr, "code generation error: %s\n", msg);
+	print_node(stderr, n, 0);
+}
+
+#define code_error(NODE, MSG) _code_error((NODE), __FILE__, __func__, __LINE__, (MSG))
+
+instruction token2code(token_t *t)
+{
+	instruction i = IHALT;
+	switch(t->type) {
+	case LESSEQUAL:    i = ILTE; break;
+	case GREATEREQUAL: i = IGTE; break;
+	case ODD:          i = IODD; break; /**@todo translate to other instructions */
+	case NOTEQUAL:     i = INEQ; break;
+	case MUL:          i = IMUL; break;
+	case SUB:          i = ISUB; break;
+	case DIV:          i = IDIV; break;
+	case ADD:          i = IADD; break;
+	case LESS:         i = ILT;  break;
+	case EQUAL:        i = IEQ;  break;
+	case GREATER:      i = IGT;  break;
+	default:  fprintf(stderr, "invalid conversion");
+		  exit(EXIT_FAILURE);
+	}
+	return i;
+}
+
+token_t *finder(node_t *n, token_t *t)
+{
+	if(!n)
+		return NULL;
+	if(!strcmp(n->token->p.id, t->p.id))
+		return n->value ? n->value : n->token; /* constant or variable */
+	return finder(n->o1, t);
+}
+
+token_t *find(scope_t *s, token_t *t)
+{
+	token_t *r;
+	if((r = finder(s->constants, t)))
+		return r;
+	if((r = finder(s->variables, t)))
+		return r;
+	return NULL;
 }
 
 /** @todo work out how to store variable lookups and scopes */
 void code(code_t *c, node_t *n, scope_t *parent) {
-	unsigned hole1;
+	unsigned hole1, hole2;
 	scope_t *current = NULL;
 	if(!n)
 		return;
 	switch(n->type) {
-	case PROGRAM: code(c, n->o1, NULL); generate(c, IHALT); 
+	case PROGRAM: code(c, n->o1, NULL); generate(c, IHALT); break;
 	case BLOCK: 
 		      current = new_scope(parent);
 		      code(c, n->o1, current); /*constants*/
@@ -707,39 +784,166 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 		      break;
 	case CONSTLIST: parent->constants = n; break;
 	case VARLIST:   parent->variables = n; break;
-	case PROCLIST:  if(parent->parent) {
+	case PROCLIST:  /*if(parent->parent) {
 				fprintf(stderr, "nested procedures disallowed\n");
 				exit(EXIT_FAILURE);
-			}
+			}*/
 			parent->functions = n;
 			code(c, n->o1, parent);
+			generate(c, IRETURN);
 			code(c, n->o2, parent);
 		      break;
 	case STATEMENT:  /*do nothing, empty statement*/
-		      return;
+		      break;
 	case ASSIGNMENT:
-		      /* find? is variable? emit code */
-	case INVOKE:  
-	case OUTPUT:  code(c, n->o1, current); generate(c, OUTPUT); break;
-	case INPUT:   code(c, n->o1, current); generate(c, INPUT); break;
-	case CONDITIONAL: code(c, n->o1, current); generate(c, INBRANCH); hole1 = hole(c);
-			  code(c, n->o2, current); fix(c, hole1, c->index); break;
-	case CONDITION: 
-	case WHILST:
-	case LIST:    code(c, n->o1, current); code(c, n->o2, current); break;
-	case UNARY_EXPRESSION: 
-	case EXPRESSION:
-	case TERM: 
+		      code(c, n->o1, parent);
+		      generate(c, ISTORE);
+		      hole(c); /**@todo  load from main or from stack */
+		      break;
+	case INVOKE:      generate(c, ICALL); 
+			  hole(c); /**@todo find function, write function into address into code*/
+			  break;
+	case OUTPUT:      code(c, n->o1, current); generate(c, OUTPUT); break;
+	case INPUT:       code(c, n->o1, current); generate(c, INPUT); break;
+	case CONDITIONAL: code(c, n->o1, current); generate(c, IJZ); hole1 = hole(c);
+			  code(c, n->o2, current); fix(c, hole1, c->here); break;
+	case CONDITION:   if(n->token->type == ODD) {
+				  code(c, n->o1, current);
+				  generate(c, IODD);
+			  } else {
+				  code(c, n->o1, current);
+				  code(c, n->o2, current);
+				  generate(c, token2code(n->token));
+			  }
+			  break;
+	case WHILST:      hole1 = c->here;
+			  code(c, n->o1, current);
+			  generate(c, IJZ);
+			  hole2 = hole(c);
+			  code(c, n->o2, current);
+			  generate(c, IJ);
+			  fix(c, hole(c), hole1);
+			  fix(c, hole2, c->here);
+			  break;
+	case LIST:        code(c, n->o1, current); code(c, n->o2, current); break;
+	case UNARY_EXPRESSION:
+		code(c, n->o1, current);
+		if(n->token)
+			generate(c, token2code(n->token));
+		break;
+	case EXPRESSION: 
+		code(c, n->o1, current);
+		generate(c, token2code(n->token));
+		break;
+	case TERM:
+		 code(c, n->o1, current);
+		 code(c, n->o2, current);
+		 if(n->token)
+			generate(c, token2code(n->token));
+		 break;
 	case FACTOR:
+		if(n->token) {
+			if(n->token->type == NUMBER) {
+				generate(c, IPUSH);
+				generate(c, n->token->p.number);
+			} else {
+				generate(c, ILOAD); /* IPUSH for constant */
+				hole(c); /** @todo look up variable / constant */
+			}
+		} else {
+			code(c, n->o1, current);
+		}
 		break;
 	}
 }
 
-/* Either print out FORTH code, or execute it in a Virtual Machine */
-
-int main(void)
+void dump(code_t *c, FILE *output)
 {
-	print_node(stdout, program(new_lexer(stdin)), 0);
+	unsigned i;
+	fputs("disassembly:\n", output);
+	for(i = 0; i < c->here; i++) {
+		instruction op = c->m[i];
+		fprintf(output, "%03x: %03x %s\n", i, op, op <= IHALT ? inames[op] : "invalid op");
+		if(op == ILOAD || op == ISTORE || op == ICALL || op == IJ || op == IJZ || op == IPUSH) {
+			i++;
+			fprintf(output, "%03x: %03x data\n", i, c->m[i]);
+		}
+	}
+}
+
+static FILE *fopen_or_die(const char *name, char *mode)
+{
+	errno = 0;
+	FILE *file = fopen(name, mode);
+	if(!file) {
+		fprintf(stderr, "Could not open file \"%s\": %s\"\n", name, errno ? strerror(errno): "unknown");
+		exit(EXIT_FAILURE);
+	}
+	return file;
+}
+
+/* Either print out FORTH code, or execute it in a Virtual Machine */
+void help(void)
+{
+	const char *help = "\
+PL/0 Compiler: A Toy Compiler\n\n\
+\t-h print out a help message and quit\n\
+\t-v turn on verbose mode\n\
+\t-V print out version information and quit\n\
+-  Stop processing arguments\n\n\
+Options must come before files to compile\n\n";
+	fputs(help, stderr);
+}
+
+void usage(const char *arg0)
+{
+	fprintf(stderr, "usage: %s [-h] [-v] [-V] [-] files\n", arg0);
+}
+
+code_t *process_file(FILE *input, FILE *output, int debug)
+{
+	lexer_t *l = new_lexer(input, debug);
+	node_t *n = program(l);
+	code_t *c = new_code();
+	print_node(output, n, 0);
+	code(c, n, NULL);
+	dump(c, output);
+	free_lexer(l);
+	free_node(n);
+	return NULL;
+}
+
+int main(int argc, char **argv)
+{
+	int i, verbose = 0;
+	for(i = 1; i < argc && argv[i][0] == '-'; i++)
+		switch(argv[i][1]) {
+		case '\0': goto done; /* stop argument processing */
+		case 'h':  help();
+			   usage(argv[0]);
+			   return -1;
+		case 'v': verbose = 1; break;
+		case 'V': fprintf(stderr, "%s version: %d\n", argv[0], VERSION);
+			  return -1;
+		default:
+			fprintf(stderr, "fatal: invalid argument '%s'\n", argv[i]);
+			usage(argv[0]);
+			return -1;
+		}
+done:
+	if(i == argc) {
+		if(verbose)
+			fputs("reading from standard in\n", stderr);
+		process_file(stdin, stdout, verbose);
+	} else {
+		for(; i < argc; i++) {
+			if(verbose)
+				fprintf(stderr, "reading from %s\n", argv[i]);
+			FILE *in = fopen_or_die(argv[i], "rb");
+			process_file(in, stdout, verbose);
+			fclose(in);
+		}
+	}
 	return 0;
 }
 
