@@ -8,7 +8,6 @@ This is a project for a toy compiler for a [pascal][] like language called
 ## See also
 
 * <http://www.ethoberon.ethz.ch/WirthPubl/CBEAll.pdf>
-* <http://web.archive.org/web/20160106194654/http://www.cs.rochester.edu/courses/254/PLzero/guide.pdf>
 
 [pascal]: https://en.wikipedia.org/wiki/Pascal_%28programming_language%29
 [PL/0]: https://en.wikipedia.org/wiki/PL/0
