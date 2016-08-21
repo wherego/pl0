@@ -1,9 +1,10 @@
 /* see https://en.wikipedia.org/wiki/PL/0 
  *
  * @todo Replace all instances of exit() with a longjmp to interpreter bounds. 
- * @todo IPUSH and IPOP will need to be relative to a base pointer
+ * @todo Stack frames need added and dealing with
  * @todo Sanity checking (check for redefinitions)
  * @todo Attempt to detect multiple errors
+ * @todo Add in assertions, make unit tests
  *
  * See: https://www.cs.swarthmore.edu/~newhall/cs75/s05/proj3/proj3.html#intro 
  * for information about stack frames and allocation */
@@ -749,14 +750,14 @@ void free_scope(scope_t *s)
 	free(s);
 }
 
-void _code_error(node_t *n, const char *file, const char *func, unsigned line, const char *msg)
+void _code_error(token_t *t, const char *file, const char *func, unsigned line, const char *msg)
 {
-	fprintf(stderr, "%s:%s:%u\n", file, func, line);
-	fprintf(stderr, "code generation error: %s\n", msg);
-	print_node(stderr, n, 0);
+	fprintf(stderr, "error (%s:%s:%u)\n", file, func, line);
+	fprintf(stderr, "identifier '%s' on line %u: %s\n", t->p.id, t->line, msg);
+	exit(EXIT_FAILURE);
 }
 
-#define code_error(NODE, MSG) _code_error((NODE), __FILE__, __func__, __LINE__, (MSG))
+#define code_error(TOKEN, MSG) _code_error((TOKEN), __FILE__, __func__, __LINE__, (MSG))
 
 instruction token2code(token_t *t)
 {
@@ -853,29 +854,20 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 		      break;
 	case ASSIGNMENT:
 		      code(c, n->o1, parent);
-		      if(!(found = find(parent, n->token))) { 
-			      fprintf(stderr, "error: variable in assignment not found %s (line %d)",
-					      n->token->p.id, n->token->line);
-			      exit(EXIT_FAILURE);
-		      }
-		      if(found->procedure || found->constant) {
-			      fprintf(stderr, "error: %s is not a variable (line %d)",
-					      n->token->p.id, n->token->line);
-			      exit(EXIT_FAILURE);
-		      }
+		      if(!(found = find(parent, n->token)))
+			      code_error(n->token, "variable not found"); 
+		      if(found->procedure || found->constant)
+			      code_error(n->token, "not a variable");
 		      generate(c, ISTORE);
 		      generate(c, found->location);
 		      break;
 	case INVOKE:
-		      if(!(found = find(parent, n->token))) {
-			      fprintf(stderr, "error: function not found %s (line %d)\n",
-					      n->token->p.id, n->token->line);
-			      exit(EXIT_FAILURE);
-		      }
-		      if(!found->procedure) {
-			      fprintf(stderr, "error: variable is not a procedure %s (line %d)\n",
-					      n->token->p.id, n->token->line);
-		      }
+		      if(!(found = find(parent, n->token))) 
+			      code_error(n->token, "function not found");
+		      if(!found->procedure)
+			      code_error(n->token, "variable is not a procedure");
+		      if(!found->located)
+			      code_error(n->token, "forward references not allowed (yet)");
 		      generate(c, ICALL); 
 		      generate(c, found->location);
 		      break;
@@ -928,23 +920,18 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 			generate(c, IPUSH);
 			generate(c, n->token->p.number);
 		} else if((found = find(parent, n->token))) {
-			if(found->procedure) {
-				fprintf(stderr, "error: procedure is not variable %s (line %d)\n",
-						n->token->p.id, n->token->line);
-				exit(EXIT_FAILURE);
-			}
+			if(found->procedure)
+				code_error(n->token, "not a variable or constant");
 			if(found->type == NUMBER) { /* find returns constants value */
 				generate(c, IPUSH);
 				generate(c, found->p.number);
 			} else {
 				assert(found->type == IDENTIFIER);
-				generate(c, ILOAD); /* IPUSH for constant */
+				generate(c, ILOAD); 
 				generate(c, found->location);
 			}
 		} else {
-			fprintf(stderr, "error: could not find variable %s (line %d)\n", 
-					n->token->p.id, n->token->line);
-			exit(EXIT_FAILURE);
+			code_error(n->token, "variable not found");
 		}
 		break;
 	}
