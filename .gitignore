@@ -1,6 +1,7 @@
 *.o
 *~
-lll
+pcode
+pl0
 a.out
 *.so
 *.a
