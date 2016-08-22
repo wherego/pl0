@@ -3,20 +3,31 @@
  * @todo Replace all instances of exit() with a longjmp to interpreter bounds. 
  * @todo Stack frames need added and dealing with
  * @todo Sanity checking (check for redefinitions)
- * @todo Attempt to detect multiple errors
+ * @todo Attempt to detect multiple errors (error recovery in parser)
  * @todo Add in assertions, make unit tests
+ * @todo Dump symbol table
+ * @todo Check that symbols and code to not overwrite each other
+ *
+ * The following needs to be added to the language:
+ * 	- Function arguments, return values (possibly with multiple return
+ * 	values)
+ * 	- Arrays
+ * 	- Modules
  *
  * See: https://www.cs.swarthmore.edu/~newhall/cs75/s05/proj3/proj3.html#intro 
  * for information about stack frames and allocation */
 #include <assert.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
-#include <errno.h>
 #include <ctype.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define MAX_ID_LENGTH (256u)
 #define MAX_CORE      (1024u)
+#define MAX_STACK     (512u)
 #define VERSION       (1)
 
 /* EBNF Grammar (from Wikipedia)
@@ -180,21 +191,20 @@ void indent(FILE *output, char c, unsigned i)
 
 void print_token_enum(FILE *output, token_e type)
 {
-	if(type == NUMBER) {
+	if(type == NUMBER)
 		fputs("number\n", output);
-	} else if(type == IDENTIFIER) {
+	else if(type == IDENTIFIER)
 		fputs("identifier\n", output);
-	} else if(type >= 0 && type < LAST_KEY_WORD) {
+	else if(type >= 0 && type < LAST_KEY_WORD)
 		fprintf(output, "key-word(%s)\n", keywords[type]);
-	} else if(type > FIRST_SINGLE_CHAR_TOKEN && type < LAST_SINGLE_CHAR_TOKEN) {
+	else if(type > FIRST_SINGLE_CHAR_TOKEN && type < LAST_SINGLE_CHAR_TOKEN)
 		fprintf(output, "token(%c)\n", type);
-	} else if(type == EOI) {
+	else if(type == EOI)
 		fputs("EOF\n", output);
-	} else if(type == ERROR) {
+	else if(type == ERROR)
 		fputs("error token\n", output);
-	} else {
+	else
 		fprintf(output, "invalid-token(%d)\n", type);
-	}
 }
 
 void print_token(FILE *output, token_t *t, unsigned depth)
@@ -241,7 +251,6 @@ token_t *new_token(token_e type, unsigned line)
 
 void free_token(token_t *t)
 {
-
 	if(!t)
 		return;
 	if(t->type == IDENTIFIER)
@@ -283,6 +292,7 @@ void lexer(lexer_t *l)
 	l->token = new_token(ERROR, l->line);
 again:  switch(ch) {
 	case '\n': l->token->line = l->line++;
+	case '\t':
 	case ' ': ch = next_char(l);
 		  goto again;
 	case DOT: l->token->type = DOT; return;
@@ -345,6 +355,7 @@ again:  switch(ch) {
 			}
 			break;
 		}
+		fprintf(stderr, "token: %s (%d)\n", l->id, ch);
 		syntax_error(l, "invalid token");
 	}
 	unget_char(l, ch);
@@ -601,6 +612,7 @@ node_t *constlist(lexer_t *l) /* "const" ident "=" number {"," ident "=" number}
 	expect(l, EQUAL);
 	expect(l, NUMBER);
 	r->value = l->accepted;
+	r->value->constant = 1;
 	l->accepted = NULL;
 	if(accept(l, COMMA))
 		r->o1 = constlist(l);
@@ -662,9 +674,10 @@ node_t *program(lexer_t *l)
 }
 
 typedef struct {
-	unsigned m[MAX_CORE];
 	unsigned here;
 	unsigned globals;
+	unsigned size;
+	intptr_t m[];
 } code_t;
 
 typedef struct scope_t {
@@ -724,10 +737,12 @@ void fix(code_t *c, unsigned hole, unsigned patch)
 	c->m[hole] = patch;
 }
 
-code_t *new_code(void)
+code_t *new_code(unsigned size)
 {
-	code_t *r = allocate(sizeof(*r));
-	r->globals = MAX_CORE - 1; /* data stored at end of core*/
+	assert(size);
+	code_t *r = allocate(sizeof(*r)+size*(sizeof(r->m[0])+1));
+	r->size = size;
+	r->globals = size - 1; /* data stored at end of core*/
 	return r;
 }
 
@@ -828,7 +843,10 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 		      current = new_scope(parent);
 		      code(c, n->o1, current); /*constants*/
 		      code(c, n->o2, current); /*variables*/
+		      generate(c, IJ);
+		      hole1 = hole(c);
 		      code(c, n->o3, current); /*procedures*/
+		      fix(c, hole1, c->here);
 		      code(c, n->o4, current); /*final statement*/
 		      free_scope(current);
 		      break;
@@ -838,11 +856,7 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 			 * they will be marked correctly */
 			allocvar(c, n, parent->parent == NULL); 
 			break;
-	case PROCLIST:  /*if(parent->parent) {
-				fprintf(stderr, "nested procedures disallowed\n");
-				exit(EXIT_FAILURE);
-			}*/
-			/* @note forward references will need detecting */
+	case PROCLIST:  /* @note forward references will need detecting */
 			if(!parent->functions)
 				parent->functions = n;
 			n->token->location = c->here;
@@ -872,8 +886,14 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 		      generate(c, ICALL); 
 		      generate(c, found->location);
 		      break;
-	case OUTPUT:      code(c, n->o1, parent); generate(c, IWRITE); break;
-	case INPUT:       code(c, n->o1, parent); generate(c, IREAD); break;
+	case OUTPUT:  code(c, n->o1, parent); generate(c, IWRITE); break;
+	case INPUT:       
+		if(!(found = find(parent, n->token)))
+			code_error(n->token, "variable not found");
+		if(found->procedure || found->constant)
+			code_error(n->token, "not a variable");
+		generate(c, IREAD); generate(c, found->location); 
+		break;
 	case CONDITIONAL: code(c, n->o1, parent); generate(c, IJZ); hole1 = hole(c);
 			  code(c, n->o2, parent); fix(c, hole1, c->here); break;
 	case CONDITION:   if(n->token && n->token->type == ODD) {
@@ -938,21 +958,75 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 	}
 }
 
+int idump(code_t *c, FILE *output, unsigned i)
+{
+	instruction op = c->m[i];
+	fprintf(output, "%03x: %03x %s\n", i, op, op <= IHALT ? inames[op] : "invalid op");
+	if(op == ILOAD || op == ISTORE || op == ICALL || op == IJ || op == IJZ || op == IPUSH || op == IREAD) {
+		i++;
+		fprintf(output, "%03x: %03"PRIxPTR" data\n", i, c->m[i]);
+	}
+	return i;
+}
+
 void dump(code_t *c, FILE *output)
 {
 	unsigned i;
 	fputs("disassembly:\n", output);
-	for(i = 0; i < c->here; i++) {
-		instruction op = c->m[i];
-		fprintf(output, "%03x: %03x %s\n", i, op, op <= IHALT ? inames[op] : "invalid op");
-		if(op == ILOAD || op == ISTORE || op == ICALL || op == IJ || op == IJZ || op == IPUSH) {
-			i++;
-			fprintf(output, "%03x: %03x data\n", i, c->m[i]);
+	for(i = 0; i < c->here; i++)
+		i = idump(c, output, i);
+	fputs("symbols defined:\n", output);
+	for(i = c->size - 1; i > c->globals; i--) /**@todo lookup variable names */
+		fprintf(output, "%03x: %"PRIiPTR"\n", i, c->m[i]);
+}
+
+int vm(code_t *c, FILE *input, FILE *output, int debug)
+{
+	intptr_t varstack[MAX_STACK] = { 0 }, 
+		 retstack[MAX_STACK] = { 0 }, 
+		 *R = retstack, 
+		 *S = varstack, 
+		 *pc = &c->m[0], 
+		 *m = c->m,
+		 f,
+		 op;
+	for(;;) {
+		if(debug)
+			idump(c, output, (unsigned)(pc - m));
+		switch(op = *pc++) {
+		case ILOAD:   *++S = f; f = m[*pc++];  break;
+		case ISTORE:  m[*pc++] = f;            break;
+		case ICALL:   *R++ = (intptr_t)(pc+1); 
+			      pc = m+*pc;              break;
+		case IRETURN: pc = (intptr_t*)*--R;    break;
+		case IJ:      pc = m+*pc;              break;
+		case IJZ:     if(!f) pc = m+*pc; else pc++; f = *S--; break;
+		case IADD:    f = *S-- +  f;           break;
+		case ISUB:    f = *S-- -  f;           break;
+		case IMUL:    f = *S-- *  f;           break;
+		case IDIV:    if(!f) {
+				      fprintf(stderr, "divide by zero!\n");
+				      return -1;
+			      }
+			      f = *S-- /  f;           break;
+		case ILTE:    f = *S-- <= f;           break;
+		case IGTE:    f = *S-- >= f;           break;
+		case ILT:     f = *S-- <  f;           break;
+		case IGT:     f = *S-- >  f;           break;
+		case IEQ:     f = *S-- == f;           break;
+		case INEQ:    f = *S-- != f;           break;
+		case IODD:    f = f & 1;               break;
+		case IPUSH:   *++S = f; f = *pc++;     break;
+		case IPOP:    f = *--S;                break;
+		case IREAD:   fscanf(input, "%"PRIiPTR, &m[*pc++]); break;
+		case IWRITE:  fprintf(output, "%"PRIiPTR"\n", f); f = *--S; break;
+		case IHALT:   return 0;                break;
+		default:
+			fprintf(stderr, "illegal operation (%"PRIdPTR")!\n", op);
+			return -1;
+			break;
 		}
 	}
-	fputs("symbols defined:\n", output);
-	for(i = MAX_CORE - 1; i > c->globals; i--) /**@todo lookup variable names */
-		fprintf(output, "%03x: %u\n", i, c->m[i]);
 }
 
 static FILE *fopen_or_die(const char *name, char *mode)
@@ -988,10 +1062,13 @@ code_t *process_file(FILE *input, FILE *output, int debug)
 {
 	lexer_t *l = new_lexer(input, debug);
 	node_t *n = program(l);
-	code_t *c = new_code();
-	print_node(output, n, 0);
+	code_t *c = new_code(MAX_CORE);
+	if(debug)
+		print_node(output, n, 0);
 	code(c, n, NULL);
-	dump(c, output);
+	if(debug)
+		dump(c, output);
+	vm(c, stdin, output, debug);
 	free_token(l->accepted);
 	free_lexer(l);
 	free_node(n);

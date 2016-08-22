@@ -56,5 +56,6 @@ begin
   call divide;
   x := 84;
   y := 36;
-  call gcd
+  call gcd;
+  ! z
 end.

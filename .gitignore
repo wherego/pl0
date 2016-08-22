@@ -3,6 +3,8 @@
 pcode
 pl0
 a.out
+vgcore.*
+core
 *.so
 *.a
 *.log
