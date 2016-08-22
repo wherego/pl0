@@ -241,6 +241,7 @@ token_t *new_token(token_e type, unsigned line)
 
 void free_token(token_t *t)
 {
+
 	if(!t)
 		return;
 	if(t->type == IDENTIFIER)
@@ -524,8 +525,8 @@ node_t *condition(lexer_t *l)
 {
 	node_t *r = new_node(l, CONDITION);
 	if(accept(l, ODD)) { /* "odd" unary_expression */
-		r->o1 = unary_expression(l);
 		use(l, r);
+		r->o1 = unary_expression(l);
 	} else { /* unary_expression ("="|"#"|"<"|"<="|">"|">=") unary_expression*/
 		r->o1 = unary_expression(l);
 		if(accept(l, EQUAL) || accept(l, GREATER) || accept(l, LESS) 
@@ -600,6 +601,7 @@ node_t *constlist(lexer_t *l) /* "const" ident "=" number {"," ident "=" number}
 	expect(l, EQUAL);
 	expect(l, NUMBER);
 	r->value = l->accepted;
+	l->accepted = NULL;
 	if(accept(l, COMMA))
 		r->o1 = constlist(l);
 	return r;
@@ -617,7 +619,7 @@ node_t *varlist(lexer_t *l) /* "var" ident {"," ident} ";"  */
 
 node_t *block(lexer_t *l);
 
-node_t *proclist(lexer_t *l)
+node_t *proclist(lexer_t *l) /* ident ";" block ";" procedure */
 {
 	node_t *r = new_node(l, PROCLIST);
 	expect(l, IDENTIFIER);
@@ -642,11 +644,9 @@ node_t *block(lexer_t *l)
 		r->o2 = varlist(l);
 		expect(l, SEMICOLON);
 	}
-	/* { "procedure" ident ";" block ";" } statement */
-	if(accept(l, PROCEDURE)) {
+	if(accept(l, PROCEDURE)) /* "procedure" proclist */
 		r->o3 = proclist(l);
-	}
-	r->o4 = statement(l);
+	r->o4 = statement(l); /* statement */
 	return r;
 }
 
@@ -786,7 +786,7 @@ token_t *finder(node_t *n, token_t *t)
 		return NULL;
 	if(!strcmp(n->token->p.id, t->p.id))
 		return n->value ? n->value : n->token; /* constant or variable */
-	return finder(n->o1, t);
+	return finder(n->token->procedure ? n->o2 : n->o1, t);
 }
 
 token_t *find(scope_t *s, token_t *t)
@@ -843,7 +843,8 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 				exit(EXIT_FAILURE);
 			}*/
 			/* @note forward references will need detecting */
-			parent->functions = n;
+			if(!parent->functions)
+				parent->functions = n;
 			n->token->location = c->here;
 			n->token->located = 1;
 			code(c, n->o1, parent);
@@ -875,7 +876,7 @@ void code(code_t *c, node_t *n, scope_t *parent) {
 	case INPUT:       code(c, n->o1, parent); generate(c, IREAD); break;
 	case CONDITIONAL: code(c, n->o1, parent); generate(c, IJZ); hole1 = hole(c);
 			  code(c, n->o2, parent); fix(c, hole1, c->here); break;
-	case CONDITION:   if(n->token->type == ODD) {
+	case CONDITION:   if(n->token && n->token->type == ODD) {
 				  code(c, n->o1, parent);
 				  generate(c, IODD);
 			  } else {
