@@ -787,16 +787,16 @@ static void free_scope(scope_t *s)
 	free(s);
 }
 
-static void _code_error(token_t *t, const char *file, const char *func, unsigned line, const char *msg)
+static void _code_error(code_t *c, token_t *t, const char *file, const char *func, unsigned line, const char *msg)
 {
 	fprintf(stderr, "error (%s:%s:%u)\n", file, func, line);
 	fprintf(stderr, "identifier '%s' on line %u: %s\n", t->p.id, t->line, msg);
-	exit(EXIT_FAILURE);
+	ethrow(&c->error);
 }
 
-#define code_error(TOKEN, MSG) _code_error((TOKEN), __FILE__, __func__, __LINE__, (MSG))
+#define code_error(CODE, TOKEN, MSG) _code_error((CODE),(TOKEN), __FILE__, __func__, __LINE__, (MSG))
 
-static instruction token2code(token_t *t)
+static instruction token2code(code_t *c, token_t *t)
 {
 	instruction i = IHALT;
 	switch(t->type) {
@@ -812,7 +812,7 @@ static instruction token2code(token_t *t)
 	case EQUAL:        i = IEQ;  break;
 	case GREATER:      i = IGT;  break;
 	default:  fprintf(stderr, "invalid conversion");
-		  exit(EXIT_FAILURE);
+		  ethrow(&c->error);
 	}
 	return i;
 }
@@ -897,28 +897,28 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 	case ASSIGNMENT:
 		      _code(c, n->o[0], parent);
 		      if(!(found = find(parent, n->token)))
-			      code_error(n->token, "variable not found"); 
+			      code_error(c, n->token, "variable not found"); 
 		      if(found->procedure || found->constant)
-			      code_error(n->token, "not a variable");
+			      code_error(c, n->token, "not a variable");
 		      generate(c, ISTORE);
 		      generate(c, found->location);
 		      break;
 	case INVOKE:
 		      if(!(found = find(parent, n->token))) 
-			      code_error(n->token, "function not found");
+			      code_error(c, n->token, "function not found");
 		      if(!found->procedure)
-			      code_error(n->token, "variable is not a procedure");
+			      code_error(c, n->token, "variable is not a procedure");
 		      if(!found->located)
-			      code_error(n->token, "forward references not allowed");
+			      code_error(c, n->token, "forward references not allowed");
 		      generate(c, ICALL); 
 		      generate(c, found->location);
 		      break;
 	case OUTPUT:  _code(c, n->o[0], parent); generate(c, IWRITE); break;
 	case INPUT:       
 		if(!(found = find(parent, n->token)))
-			code_error(n->token, "variable not found");
+			code_error(c, n->token, "variable not found");
 		if(found->procedure || found->constant)
-			code_error(n->token, "not a variable");
+			code_error(c, n->token, "not a variable");
 		generate(c, IREAD); generate(c, found->location); 
 		break;
 	case CONDITIONAL: _code(c, n->o[0], parent); generate(c, IJZ); hole1 = hole(c);
@@ -929,7 +929,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 			  } else {
 				  _code(c, n->o[0], parent);
 				  _code(c, n->o[1], parent);
-				  generate(c, token2code(n->token));
+				  generate(c, token2code(c, n->token));
 			  }
 			  break;
 	case WHILST:      hole1 = c->here;
@@ -946,17 +946,17 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 		_code(c, n->o[0], parent);
 		_code(c, n->o[1], parent);
 		if(n->token)
-			generate(c, token2code(n->token));
+			generate(c, token2code(c, n->token));
 		break;
 	case EXPRESSION: 
 		_code(c, n->o[0], parent);
-		generate(c, token2code(n->token));
+		generate(c, token2code(c, n->token));
 		break;
 	case TERM:
 		 _code(c, n->o[0], parent);
 		 _code(c, n->o[1], parent);
 		 if(n->token)
-			generate(c, token2code(n->token));
+			generate(c, token2code(c, n->token));
 		 break;
 	case FACTOR:
 		if(!n->token) {
@@ -968,7 +968,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 			generate(c, n->token->p.number);
 		} else if((found = find(parent, n->token))) {
 			if(found->procedure)
-				code_error(n->token, "not a variable or constant");
+				code_error(c, n->token, "not a variable or constant");
 			if(found->type == NUMBER) { /* find returns constants value */
 				generate(c, IPUSH);
 				generate(c, found->p.number);
@@ -978,7 +978,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 				generate(c, found->location);
 			}
 		} else {
-			code_error(n->token, "variable not found");
+			code_error(c, n->token, "variable not found");
 		}
 		break;
 	}
@@ -1121,7 +1121,7 @@ int vm(code_t *c, FILE *input, FILE *output, int debug)
 	}
 }
 
-code_t *process_file(FILE *input, FILE *output, int debug)
+code_t *process_file(FILE *input, FILE *output, int debug, int symbols)
 {
 	node_t *n = parse(input, debug);
 	if(!n)
@@ -1135,7 +1135,8 @@ code_t *process_file(FILE *input, FILE *output, int debug)
 	}
 	if(debug)
 		dump(c, output);
-	export(n, output);
+	if(symbols)
+		export(n, output);
 	vm(c, stdin, output, debug);
 	free_node(n);
 	return c;
@@ -1160,6 +1161,7 @@ PL/0 Compiler: A Toy Compiler\n\n\
 \t-h print out a help message and quit\n\
 \t-v turn on verbose mode\n\
 \t-V print out version information and quit\n\
+\t-S print out symbols defined and used\n\
 \t-  Stop processing arguments\n\n\
 Options must come before files to compile\n\n";
 	fputs(help, stderr);
@@ -1172,7 +1174,7 @@ void usage(const char *arg0)
 
 int main(int argc, char **argv)
 {
-	int i, verbose = 0;
+	int i, verbose = 0, symbols = 0;
 	code_t *c;
 	for(i = 1; i < argc && argv[i][0] == '-'; i++)
 		switch(argv[i][1]) {
@@ -1181,6 +1183,7 @@ int main(int argc, char **argv)
 			   help();
 			   return -1;
 		case 'v': verbose = 1; break;
+		case 'S': symbols = 1; break;
 		case 'V': fprintf(stderr, "%s version: %d\n", argv[0], VERSION);
 			  return -1;
 		default:
@@ -1192,14 +1195,14 @@ done:
 	if(i == argc) {
 		if(verbose)
 			fputs("reading from standard in\n", stderr);
-		c = process_file(stdin, stdout, verbose);
+		c = process_file(stdin, stdout, verbose, symbols);
 		free_code(c);
 	} else {
 		for(; i < argc; i++) {
 			if(verbose)
 				fprintf(stderr, "reading from %s\n", argv[i]);
 			FILE *in = fopen_or_die(argv[i], "rb");
-			c = process_file(in, stdout, verbose);
+			c = process_file(in, stdout, verbose, symbols);
 			free_code(c);
 			fclose(in);
 		}
