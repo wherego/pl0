@@ -1,3 +1,4 @@
+(* example program 2: multiplication, division, gcd, ... *)
 const
   m =  7,
   n = 85;

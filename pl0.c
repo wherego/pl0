@@ -298,6 +298,28 @@ static int unget_char(lexer_t *l, int c)
 	return ungetc(c, l->input);
 }
 
+/* process a comment for the lexer, chout is filled with the next 
+   character the lexer needs, this function does not return on
+   a syntax error */ 
+static void comment(lexer_t *l, int *chout)
+{ 	
+	for(;;) {
+		int ch = next_char(l);
+		if(ch == '*') {
+			ch = next_char(l);
+			if(ch == ')') {
+				*chout = next_char(l);
+				return;
+			} else if(ch == EOF) {
+				break;
+			}
+		} else if(ch == EOF) {
+			break;
+		}
+	}
+	syntax_error(l, "comment terminated by EOF");
+}
+
 static void lexer(lexer_t *l)
 {
 	int ch = next_char(l);
@@ -309,12 +331,22 @@ again:  switch(ch) {
 		  goto again;
 	case DOT: l->token->type = DOT; return;
 	case EOF: l->token->type = EOI; return;
-	case QUESTION: case EXCLAMATION: case COMMA: case SEMICOLON:
-	case LPAR:     case RPAR:        case ADD:   case SUB:
-	case MUL:      case DIV:         case EQUAL: case NOTEQUAL:
+	case QUESTION: case EXCLAMATION: case COMMA:    case SEMICOLON:
+	case RPAR:     case ADD:         case SUB:      case MUL:      
+	case DIV:      case EQUAL:       case NOTEQUAL:
 		l->token->type = ch;
 		return;
-	/* >, >=, <, <= and := are special case for now */
+	/* >, >=, <, <=, (, (* and := are special case for now */
+	case LPAR:
+		ch = next_char(l);
+		if(ch == '*') {
+			comment(l, &ch);
+			goto again;
+		} else {
+			unget_char(l, ch);
+			l->token->type = LPAR;
+		}
+		return;
 	case LESS:
 		ch = next_char(l);
 		if(ch == '=') {

@@ -1,3 +1,4 @@
+(* example program 1, prints out square numbers *)
 var x, squ;
 
 procedure square;
@@ -15,4 +16,6 @@ begin
    end
 end.
 
+Also of note, this section is not read in by the compiler, so
+we can write whatever we want here.
 
