@@ -11,7 +11,7 @@ begin
    while x <= 10 do
    begin
       call square;
-      ! squ;
+      write squ;
       x := x + 1
    end
 end.

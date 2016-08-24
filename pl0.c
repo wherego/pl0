@@ -55,14 +55,15 @@
  *    constlist  = "const" ident "=" number {"," ident "=" number} ";"
  *    varlist    = "var" ident {"," ident} ";"
  *
- *    statement  = [ assignment | invoke | input | output | list | conditional | whilst ].
+ *    statement  = [ assignment | invoke | input | output | list | conditional | whilst | doop ].
  *    assignment = ident ":=" unary-expression .
  *    invoke     = "call" ident .
- *    input      = "?" ident .
- *    output     = "!" unary-expression .
+ *    input      = "read" ident .
+ *    output     = "write" unary-expression .
  *    list       = "begin" statement {";" statement } "end" .
- *    conditional = "if" condition "then" statement .
+ *    conditional = "if" condition "then" statement [ "else" statement ] .
  *    whilst     = "while" condition "do" statement .
+ *    doop       = "do" statement "while" condition .
  *    
  *    condition = "odd" unary-expression |
  *                unary-expression ("="|"#"|"<"|"<="|">"|">=") unary-expression .
@@ -87,11 +88,14 @@ typedef enum
 	END,		/* end */
 	IF,		/* if */
 	THEN,		/* then */
+	ELSE,           /* else */
 	WHILE,		/* while */
 	DO,		/* do */
 	LESSEQUAL,      /* <= */
 	GREATEREQUAL,   /* >= */
 	ODD,            /* odd */
+	WRITE,          /* write */
+	READ,           /* read */
 	LAST_KEY_WORD,  /* not an actual token */
 
 	ERROR,          /* invalid token, not an actual token */
@@ -100,7 +104,6 @@ typedef enum
 
 	FIRST_SINGLE_CHAR_TOKEN, /* marker, not a token */
 	/* @warning these need to be in ASCII order */
-	EXCLAMATION  =  '!',
 	NOTEQUAL     =  '#',
 	LPAR         =  '(',
 	RPAR         =  ')',
@@ -114,7 +117,6 @@ typedef enum
 	LESS         =  '<',
 	EQUAL        =  '=',
 	GREATER      =  '>',
-	QUESTION     =  '?',
 	LAST_SINGLE_CHAR_TOKEN, /* marker, not a token */
 	EOI          =  EOF
 } token_e;
@@ -130,11 +132,14 @@ static const char *keywords[] =
 	[END]           =  "end",
 	[IF]            =  "if",
 	[THEN]          =  "then",
+	[ELSE]          =  "else",
 	[WHILE]         =  "while",
 	[DO]            =  "do",
 	[LESSEQUAL]     =  "<=",
 	[GREATEREQUAL]  =  ">=",
 	[ODD]           =  "odd",
+	[WRITE]         =  "write",
+	[READ]          =  "read",
 	NULL
 };
 
@@ -331,8 +336,8 @@ again:  switch(ch) {
 		  goto again;
 	case DOT: l->token->type = DOT; return;
 	case EOF: l->token->type = EOI; return;
-	case QUESTION: case EXCLAMATION: case COMMA:    case SEMICOLON:
-	case RPAR:     case ADD:         case SUB:      case MUL:      
+	case COMMA:    case SEMICOLON:   case RPAR:     
+	case ADD:      case SUB:         case MUL:      
 	case DIV:      case EQUAL:       case NOTEQUAL:
 		l->token->type = ch;
 		return;
@@ -418,6 +423,7 @@ typedef enum {
 		INPUT,
 		CONDITIONAL,
 		WHILST,
+		DOOP,
 		LIST,
 	CONDITION, 
 	EXPRESSION,
@@ -439,6 +445,7 @@ static const char *names[] = {
 	[INPUT]        =  "input",
 	[CONDITIONAL]  =  "conditional",
 	[WHILST]       =  "whilst",
+	[DOOP]         =  "do",
 	[LIST]         =  "list",
 	[CONDITION]    =  "condition",
 	[EXPRESSION]   =  "expression",
@@ -602,7 +609,7 @@ static node_t *list(lexer_t *l)
 
 static node_t *statement(lexer_t *l)
 {
-	node_t *r = new_node(l, STATEMENT, 2);
+	node_t *r = new_node(l, STATEMENT, 3);
 	if(accept(l, IDENTIFIER)) { /* ident ":=" unary_expression */
 		use(l, r);
 		expect(l, ASSIGN);
@@ -612,29 +619,34 @@ static node_t *statement(lexer_t *l)
 		expect(l, IDENTIFIER);
 		use(l, r);
 		r->type = INVOKE;
-	} else if(accept(l, QUESTION)) { /* "?" ident */
+	} else if(accept(l, READ)) { /* "read" ident */
 		expect(l, IDENTIFIER);
 		use(l, r);
 		r->type = INPUT;
-	} else if(accept(l, EXCLAMATION)) { /* "!" expression */
+	} else if(accept(l, WRITE)) { /* "write" expression */
 		r->o[0] = unary_expression(l);
 		r->type = OUTPUT;
 	} else if(accept(l, BEGIN)) { /* "begin" statement {";" statement } "end" */
 		r->o[0] = list(l);
 		expect(l, END);
 		r->type = LIST;
-	} else if(accept(l, IF)) { /* "if" condition "then" statement */
-		use(l, r);
+	} else if(accept(l, IF)) { /* "if" condition "then" statement [ "else" statement ] */
 		r->o[0] = condition(l);
 		expect(l, THEN);
 		r->o[1] = statement(l);
+		if(accept(l, ELSE))
+			r->o[2] = statement(l);
 		r->type = CONDITIONAL;
 	} else if(accept(l, WHILE)) { /*  "while" condition "do" statement */
-		use(l, r);
 		r->o[0] = condition(l);
 		expect(l, DO);
 		r->o[1] = statement(l);
 		r->type = WHILST;
+	} else if(accept(l, DO)) {
+		r->o[0] = statement(l);
+		expect(l, WHILE);
+		r->o[1] = condition(l);
+		r->type = DOOP;
 	} else {
 		/* statement is optional */
 	}
@@ -742,8 +754,8 @@ typedef struct scope_t {
 } scope_t;
 
 typedef enum {
-	ILOAD, ISTORE, ICALL, IRETURN, IJ, IJZ, IADD, ISUB, IMUL, IDIV,
-	ILTE, IGTE, ILT, IGT, IEQ, INEQ, IODD, IPUSH, IPOP, IREAD, IWRITE, IHALT
+	ILOAD, ISTORE, ICALL, IRETURN, IJ, IJZ, IJNZ, IADD, ISUB, IMUL, IDIV,
+	ILTE, IGTE, ILT, IGT, IEQ, INEQ, IODD, IPUSH, IPOP, IWRITE, IREAD, IHALT
 } instruction;
 
 static const char *inames[] = {
@@ -753,6 +765,7 @@ static const char *inames[] = {
 	[IRETURN]   =  "return",
 	[IJ]        =  "j",
 	[IJZ]       =  "jz",
+	[IJNZ]      =  "jnz",
 	[IADD]      =  "+",
 	[ISUB]      =  "-",
 	[IMUL]      =  "*",
@@ -766,8 +779,8 @@ static const char *inames[] = {
 	[IODD]      =  "odd",
 	[IPUSH]     =  "push",
 	[IPOP]      =  "pop",
-	[IREAD]     =  "read",
 	[IWRITE]    =  "write",
+	[IREAD]     =  "read",
 	[IHALT]     =  "halt",
 };
 
@@ -893,59 +906,68 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 	if(!n)
 		return;
 	switch(n->type) {
-	case PROGRAM: _code(c, n->o[0], NULL); generate(c, IHALT); break;
+	case PROGRAM: 
+		_code(c, n->o[0], NULL); 
+		generate(c, IHALT); 
+		break;
 	case BLOCK: 
-		      current = new_scope(parent);
-		      _code(c, n->o[0], current); /*constants*/
-		      _code(c, n->o[1], current); /*variables*/
-		      if(!parent) {
-			      generate(c, IJ);
-			      hole1 = hole(c);
-		      }
-		      _code(c, n->o[2], current); /*procedures*/
-		      if(!parent)
-			      fix(c, hole1, c->here);
-		      _code(c, n->o[3], current); /*final statement*/
-		      free_scope(current);
-		      break;
-	case CONSTLIST: parent->constants = n; break;
-	case VARLIST:   parent->variables = n; 
-			/**@note allocate all vars to globals for now, although
-			 * they will be marked correctly as locals */
-			allocvar(c, n, parent->parent == NULL); 
-			break;
+		current = new_scope(parent);
+		_code(c, n->o[0], current); /*constants*/
+		_code(c, n->o[1], current); /*variables*/
+		if(!parent) {
+			generate(c, IJ);
+			hole1 = hole(c);
+		}
+		_code(c, n->o[2], current); /*procedures*/
+		if(!parent)
+			fix(c, hole1, c->here);
+		_code(c, n->o[3], current); /*final statement*/
+		free_scope(current);
+		break;
+	case CONSTLIST: 
+		parent->constants = n; 
+		break;
+	case VARLIST:   
+		parent->variables = n; 
+		/**@note allocate all vars to globals for now, although
+		 * they will be marked correctly as locals */
+		allocvar(c, n, parent->parent == NULL); 
+		break;
 	case PROCLIST: 
-			if(!parent->functions)
-				parent->functions = n;
-			parent->this = n;
-			n->token->location = c->here;
-			n->token->located = 1;
-			_code(c, n->o[0], parent);
-			generate(c, IRETURN);
-			_code(c, n->o[1], parent);
-		      break;
+		if(!parent->functions)
+			parent->functions = n;
+		parent->this = n;
+		n->token->location = c->here;
+		n->token->located = 1;
+		_code(c, n->o[0], parent);
+		generate(c, IRETURN);
+		_code(c, n->o[1], parent);
+		break;
 	case STATEMENT:  /*do nothing, empty statement*/
-		      break;
+		break;
 	case ASSIGNMENT:
-		      _code(c, n->o[0], parent);
-		      if(!(found = find(parent, n->token)))
-			      code_error(c, n->token, "variable not found"); 
-		      if(found->procedure || found->constant)
-			      code_error(c, n->token, "not a variable");
-		      generate(c, ISTORE);
-		      generate(c, found->location);
-		      break;
+		_code(c, n->o[0], parent);
+		if(!(found = find(parent, n->token)))
+			code_error(c, n->token, "variable not found"); 
+		if(found->procedure || found->constant)
+			code_error(c, n->token, "not a variable");
+		generate(c, ISTORE);
+		generate(c, found->location);
+		break;
 	case INVOKE:
-		      if(!(found = find(parent, n->token))) 
-			      code_error(c, n->token, "function not found");
-		      if(!found->procedure)
-			      code_error(c, n->token, "variable is not a procedure");
-		      if(!found->located)
-			      code_error(c, n->token, "forward references not allowed");
-		      generate(c, ICALL); 
-		      generate(c, found->location);
-		      break;
-	case OUTPUT:  _code(c, n->o[0], parent); generate(c, IWRITE); break;
+		if(!(found = find(parent, n->token))) 
+			code_error(c, n->token, "function not found");
+		if(!found->procedure)
+			code_error(c, n->token, "variable is not a procedure");
+		if(!found->located)
+			code_error(c, n->token, "forward references not allowed");
+		generate(c, ICALL); 
+		generate(c, found->location);
+		break;
+	case OUTPUT:  
+		_code(c, n->o[0], parent); 
+		generate(c, IWRITE); 
+		break;
 	case INPUT:       
 		if(!(found = find(parent, n->token)))
 			code_error(c, n->token, "variable not found");
@@ -953,27 +975,52 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 			code_error(c, n->token, "not a variable");
 		generate(c, IREAD); generate(c, found->location); 
 		break;
-	case CONDITIONAL: _code(c, n->o[0], parent); generate(c, IJZ); hole1 = hole(c);
-			  _code(c, n->o[1], parent); fix(c, hole1, c->here); break;
-	case CONDITION:   if(n->token && n->token->type == ODD) {
-				  _code(c, n->o[0], parent);
-				  generate(c, IODD);
-			  } else {
-				  _code(c, n->o[0], parent);
-				  _code(c, n->o[1], parent);
-				  generate(c, token2code(c, n->token));
-			  }
-			  break;
-	case WHILST:      hole1 = c->here;
-			  _code(c, n->o[0], parent);
-			  generate(c, IJZ);
-			  hole2 = hole(c);
-			  _code(c, n->o[1], parent);
-			  generate(c, IJ);
-			  fix(c, hole(c), hole1);
-			  fix(c, hole2, c->here);
-			  break;
-	case LIST:        _code(c, n->o[0], parent); _code(c, n->o[1], parent); break;
+	case CONDITIONAL: 
+		_code(c, n->o[0], parent); 
+		generate(c, IJZ); 
+		hole1 = hole(c);
+		_code(c, n->o[1], parent); 
+		if(n->o[2]) { /* if ... then ... else */
+			generate(c, IJ);
+			hole2 = hole(c);
+			fix(c, hole1, c->here);
+			_code(c, n->o[2], parent);
+			fix(c, hole2, c->here);
+		} else { /* if ... then */
+			fix(c, hole1, c->here); 
+		}
+		break;
+	case CONDITION:   
+		if(n->token && n->token->type == ODD) {
+			_code(c, n->o[0], parent);
+			generate(c, IODD);
+		} else {
+			_code(c, n->o[0], parent);
+			_code(c, n->o[1], parent);
+			generate(c, token2code(c, n->token));
+		}
+		break;
+	case WHILST:      
+		hole1 = c->here;
+		_code(c, n->o[0], parent);
+		generate(c, IJZ);
+		hole2 = hole(c);
+		_code(c, n->o[1], parent);
+		generate(c, IJ);
+		fix(c, hole(c), hole1);
+		fix(c, hole2, c->here);
+		break;
+	case DOOP:
+		hole1 = c->here;
+		_code(c, n->o[0], parent);
+		_code(c, n->o[1], parent);
+		generate(c, IJNZ);
+		fix(c, hole(c), hole1);
+		break;
+	case LIST:        
+		_code(c, n->o[0], parent); 
+		_code(c, n->o[1], parent); 
+		break;
 	case UNARY_EXPRESSION:
 		_code(c, n->o[0], parent);
 		_code(c, n->o[1], parent);
@@ -1125,6 +1172,7 @@ int vm(code_t *c, FILE *input, FILE *output, int debug)
 		case IRETURN: pc = (intptr_t*)f; f = *S--; break;
 		case IJ:      pc = m+*pc;              break;
 		case IJZ:     if(!f) pc = m+*pc; else pc++; f = *S--; break;
+		case IJNZ:    if( f) pc = m+*pc; else pc++; f = *S--; break;
 		case IADD:    f = *S-- +  f;           break;
 		case ISUB:    f = *S-- -  f;           break;
 		case IMUL:    f = *S-- *  f;           break;

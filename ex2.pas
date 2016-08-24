@@ -58,5 +58,5 @@ begin
   x := 84;
   y := 36;
   call gcd;
-  ! z
+  write z
 end.
