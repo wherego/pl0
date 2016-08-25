@@ -1,7 +1,13 @@
 (* example program 3; this is not a coherent program, just test code *)
 
 const x = 3, y = 4;
-var z;
+var z, sx, sy;
+
+(* syntax for function argument declaration is non functional at the moment *)
+procedure square x;
+begin
+	sy := sx * sx;
+end;
 
 begin
 	z := 3;
@@ -10,6 +16,9 @@ begin
 	read z;
 	write z;
 	write x;
+
+	(* syntax for function call arguments is non functional *)
+	call square, x;
 	if y = 4 then
 		z := 3
 	else 
