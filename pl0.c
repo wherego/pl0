@@ -70,7 +70,7 @@
  *    condition = "odd" unary-expression |
  *                unary-expression ("="|"#"|"<"|"<="|">"|">=") unary-expression .
  *
- *    expression = { ("+"|"-") term}.
+ *    expression = { ("+"|"-"|"and"|"or"|"xor") term}.
  *    
  *    unary-expression = ["+"|"-"] term expression.
  *    
@@ -98,6 +98,10 @@ typedef enum
 	ODD,            /* odd */
 	WRITE,          /* write */
 	READ,           /* read */
+	AND,
+	OR,
+	XOR,
+	INVERT,
 	LAST_KEY_WORD,  /* not an actual token */
 
 	ERROR,          /* invalid token, not an actual token */
@@ -142,6 +146,10 @@ static const char *keywords[] =
 	[ODD]           =  "odd",
 	[WRITE]         =  "write",
 	[READ]          =  "read",
+	[AND]           =  "and",
+	[OR]            =  "or",
+	[XOR]           =  "xor",
+	[INVERT]        =  "invert",
 	NULL
 };
 
@@ -328,6 +336,18 @@ static void comment(lexer_t *l, int *chout)
 	syntax_error(l, "comment terminated by EOF");
 }
 
+static intptr_t number(lexer_t *l, int *c)
+{
+	intptr_t i = 0;
+	int ch = *c;
+	while(isdigit(ch)) {
+		i = i * 10 + (ch - '0');
+		ch = next_char(l);
+	}
+	*c = ch;
+	return i;
+}
+
 static void lexer(lexer_t *l)
 {
 	int ch = next_char(l);
@@ -339,9 +359,19 @@ again:  switch(ch) {
 		  goto again;
 	case DOT: l->token->type = DOT; return;
 	case EOF: l->token->type = EOI; return;
-	case COMMA:    case SEMICOLON:   case RPAR:     
-	case ADD:      case SUB:         case MUL:      
-	case DIV:      case EQUAL:       case NOTEQUAL:
+	case COMMA:    case SEMICOLON:  case RPAR:     
+	case ADD:      case MUL:        case DIV:      
+	case EQUAL:    case NOTEQUAL:
+		l->token->type = ch;
+		return;
+	case SUB:
+		/**@todo process negative numbers, hex and octal */
+		/*ch = next_char(l);
+		if(isdigit(ch)) {
+			l->token->type = NUMBER;
+			l->token->p.number = number(l, &ch);
+			break;
+		}*/
 		l->token->type = ch;
 		return;
 	/* >, >=, <, <=, (, (* and := are special case for now */
@@ -381,13 +411,8 @@ again:  switch(ch) {
 		return;
 	default:
 		if(isdigit(ch)) {
-			int i = 0;
-			while(isdigit(ch)) {
-				i = i * 10 + (ch - '0');
-				ch = next_char(l);
-			}
 			l->token->type = NUMBER;
-			l->token->p.number = i;
+			l->token->p.number = number(l, &ch);
 			break;
 		}
 		if(isalpha(ch)) {
@@ -413,48 +438,37 @@ again:  switch(ch) {
 	unget_char(l, ch);
 }
 
+#define XMACRO_PARSE\
+	X(PROGRAM,           "program")\
+	X(BLOCK,             "block")\
+	X(STATEMENT,         "statement")\
+	X(CONSTLIST,         "constants")\
+	X(VARLIST,           "variables")\
+	X(PROCLIST,          "procedures")\
+	X(ASSIGNMENT,        "assignment")\
+	X(INVOKE,            "invocation")\
+	X(OUTPUT,            "output")\
+	X(INPUT,             "input")\
+	X(CONDITIONAL,       "conditional")\
+	X(WHILST,            "whilst")\
+	X(DOOP,              "do")\
+	X(LIST,              "list")\
+	X(CONDITION,         "condition")\
+	X(EXPRESSION,        "expression")\
+	X(UNARY_EXPRESSION,  "unary-expression")\
+	X(TERM,              "term")\
+	X(FACTOR,            "factor")\
+
 typedef enum {
-	PROGRAM, 
-	BLOCK, 
-		CONSTLIST,
-		VARLIST,
-		PROCLIST,
-	STATEMENT,
-		ASSIGNMENT,
-		INVOKE,
-		OUTPUT,
-		INPUT,
-		CONDITIONAL,
-		WHILST,
-		DOOP,
-		LIST,
-	CONDITION, 
-	EXPRESSION,
-	UNARY_EXPRESSION, 
-	TERM, 
-	FACTOR,
+#define X(ENUM, NAME) ENUM,
+	XMACRO_PARSE
+#undef X
 } parse_e;
 
 static const char *names[] = {
-	[PROGRAM]      =  "program",
-	[BLOCK]        =  "block",
-	[STATEMENT]    =  "statement",
-	[CONSTLIST]    =  "constants",
-	[VARLIST]      =  "variables",
-	[PROCLIST]     =  "procedures",
-	[ASSIGNMENT]   =  "assignment",
-	[INVOKE]       =  "invocation",
-	[OUTPUT]       =  "output",
-	[INPUT]        =  "input",
-	[CONDITIONAL]  =  "conditional",
-	[WHILST]       =  "whilst",
-	[DOOP]         =  "do",
-	[LIST]         =  "list",
-	[CONDITION]    =  "condition",
-	[EXPRESSION]   =  "expression",
-	[UNARY_EXPRESSION]   =  "unary-expression",
-	[TERM]         =  "term",
-	[FACTOR]       =  "factor",
+#define X(ENUM, NAME) [ENUM] = NAME,
+	XMACRO_PARSE
+#undef X
 };
 
 typedef struct node_t  {
@@ -525,7 +539,7 @@ static int _expect(lexer_t *l, token_e sym, const char *file, const char *func, 
 	print_token(stderr, l->token, 0);
 	fputs("  Expected:     ", stderr);
 	print_token_enum(stderr, sym);
-	fprintf(stderr, "On line: %u\n", l->line);
+	fprintf(stderr, "\n  On line: %u\n", l->line);
 	ethrow(&l->error);
 	return 0;
 }
@@ -562,7 +576,7 @@ static node_t *term(lexer_t *l) /* factor {("*"|"/") factor}. */
 
 static node_t *expression(lexer_t *l) /* { ("+"|"-") term}. */
 {
-	if(accept(l, ADD) || accept(l, SUB)) {
+	if(accept(l, ADD) || accept(l, SUB) || accept(l, AND) || accept(l, OR) || accept(l, XOR)) {
 		node_t *r = new_node(l, EXPRESSION, 1);
 		use(l, r);
 		r->o[0] = term(l);
@@ -636,20 +650,33 @@ static node_t *optvarlist(lexer_t *l)
 	return NULL;
 }
 
+static node_t *call(lexer_t *l)
+{
+	node_t *r = new_node(l, INVOKE, 1);
+	expect(l, IDENTIFIER);
+	use(l, r);
+	if(accept(l, COMMA))
+		r->o[0] = varlist(l);
+	return r;
+}
+
 static node_t *statement(lexer_t *l)
 {
 	node_t *r = new_node(l, STATEMENT, 3);
 	if(accept(l, IDENTIFIER)) { /* ident ":=" unary_expression */
 		use(l, r);
 		expect(l, ASSIGN);
-		r->o[0] = unary_expression(l);
+		if(accept(l, CALL))
+			r->o[0] = call(l);
+		else
+			r->o[0] = unary_expression(l);
 		r->type = ASSIGNMENT;
 	} else if(accept(l, CALL)) { /* "call" ident  */
 		expect(l, IDENTIFIER);
 		use(l, r);
-		r->type = INVOKE;
 		if(accept(l, COMMA))
 			r->o[0] = varlist(l);
+		r->type = INVOKE;
 	} else if(accept(l, READ)) { /* "read" ident */
 		expect(l, IDENTIFIER);
 		use(l, r);
@@ -778,35 +805,47 @@ typedef struct scope_t {
 	struct scope_t *parent;
 } scope_t;
 
+#define XMACRO_INSTRUCTION\
+	X(INOP,     "nop")\
+	X(ILOAD,    "load")\
+	X(ISTORE,   "store")\
+	X(ICALL,    "call")\
+	X(IRETURN,  "return")\
+	X(IJMP,     "jmp")\
+	X(IJZ,      "jz")\
+	X(IJNZ,     "jnz")\
+	X(IADD,     "+")\
+	X(ISUB,     "-")\
+	X(IMUL,     "*")\
+	X(IDIV,     "/")\
+	X(ILTE,     "<=")\
+	X(IGTE,     ">=")\
+	X(ILT,      "<")\
+	X(IGT,      ">")\
+	X(IEQ,      "=")\
+	X(INEQ,     "#")\
+	X(IAND,     "and")\
+	X(IOR,      "or")\
+	X(IXOR,     "xor")\
+	X(IINVERT,  "invert")\
+	X(INEGATE,  "negate")\
+	X(IODD,     "odd")\
+	X(IPUSH,    "push")\
+	X(IPOP,     "pop")\
+	X(IWRITE,   "write")\
+	X(IREAD,    "read")\
+	X(IHALT,    "halt")
+
 typedef enum {
-	ILOAD, ISTORE, ICALL, IRETURN, IJ, IJZ, IJNZ, IADD, ISUB, IMUL, IDIV,
-	ILTE, IGTE, ILT, IGT, IEQ, INEQ, IODD, IPUSH, IPOP, IWRITE, IREAD, IHALT
+#define X(ENUM, NAME) ENUM,
+	XMACRO_INSTRUCTION
+#undef X
 } instruction;
 
 static const char *inames[] = {
-	[ILOAD]     =  "load",
-	[ISTORE]    =  "store",
-	[ICALL]     =  "call",
-	[IRETURN]   =  "return",
-	[IJ]        =  "j",
-	[IJZ]       =  "jz",
-	[IJNZ]      =  "jnz",
-	[IADD]      =  "+",
-	[ISUB]      =  "-",
-	[IMUL]      =  "*",
-	[IDIV]      =  "/",
-	[ILTE]      =  "<=",
-	[IGTE]      =  ">=",
-	[ILT]       =  "<",
-	[IGT]       =  ">",
-	[IEQ]       =  "=",
-	[INEQ]      =  "#",
-	[IODD]      =  "odd",
-	[IPUSH]     =  "push",
-	[IPOP]      =  "pop",
-	[IWRITE]    =  "write",
-	[IREAD]     =  "read",
-	[IHALT]     =  "halt",
+#define X(ENUM, NAME) [ENUM] = NAME,
+	XMACRO_INSTRUCTION
+#undef X
 };
 
 static void generate(code_t *c, node_t *n, instruction i)
@@ -844,6 +883,8 @@ static code_t *new_code(unsigned size, int debug)
 
 void free_code(code_t *c)
 {
+	if(!c)
+		return;
 	free_node(c->root);
 	free(c->debug);
 	free(c);
@@ -879,6 +920,7 @@ static instruction token2code(code_t *c, token_t *t)
 	case LESSEQUAL:    i = ILTE; break;
 	case GREATEREQUAL: i = IGTE; break;
 	case ODD:          i = IODD; break; /**@todo translate to other instructions */
+	case INVERT:       i = IINVERT; break; 
 	case NOTEQUAL:     i = INEQ; break;
 	case MUL:          i = IMUL; break;
 	case SUB:          i = ISUB; break;
@@ -887,6 +929,22 @@ static instruction token2code(code_t *c, token_t *t)
 	case LESS:         i = ILT;  break;
 	case EQUAL:        i = IEQ;  break;
 	case GREATER:      i = IGT;  break;
+	case AND:          i = IAND; break;
+	case OR:           i = IOR;  break;
+	case XOR:          i = IXOR; break;
+	default:  fprintf(stderr, "invalid conversion");
+		  ethrow(&c->error);
+	}
+	return i;
+}
+
+static instruction unary2code(code_t *c, token_t *t)
+{
+	instruction i = IHALT;
+	switch(t->type) {
+	case ADD:   i = INOP;    break;
+	case SUB:   i = INEGATE; break;
+	case ODD:   i = IODD;    break;
 	default:  fprintf(stderr, "invalid conversion");
 		  ethrow(&c->error);
 	}
@@ -948,7 +1006,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 		_code(c, n->o[0], current); /*constants*/
 		_code(c, n->o[1], current); /*variables*/
 		if(!parent) {
-			generate(c, n, IJ);
+			generate(c, n, IJMP);
 			hole1 = hole(c);
 		}
 		_code(c, n->o[2], current); /*procedures*/
@@ -1015,7 +1073,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 		hole1 = hole(c);
 		_code(c, n->o[1], parent); 
 		if(n->o[2]) { /* if ... then ... else */
-			generate(c, n, IJ);
+			generate(c, n, IJMP);
 			hole2 = hole(c);
 			fix(c, hole1, c->here);
 			_code(c, n->o[2], parent);
@@ -1040,7 +1098,7 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 		generate(c, n, IJZ);
 		hole2 = hole(c);
 		_code(c, n->o[1], parent);
-		generate(c, n, IJ);
+		generate(c, n, IJMP);
 		fix(c, hole(c), hole1);
 		fix(c, hole2, c->here);
 		break;
@@ -1059,8 +1117,11 @@ static void _code(code_t *c, node_t *n, scope_t *parent)
 		/**@todo unary expression not handled correctly */
 		_code(c, n->o[0], parent);
 		_code(c, n->o[1], parent);
-		if(n->token)
-			generate(c, n, token2code(c, n->token));
+		if(n->token) {
+			instruction i = unary2code(c, n->token);
+			if(i != INOP)
+				generate(c, n, i);
+		}
 		break;
 	case EXPRESSION: 
 		_code(c, n->o[0], parent);
@@ -1173,7 +1234,7 @@ static int idump(code_t *c, FILE *output, int nprint, unsigned i)
 	fprintf(output, "%03x: %03x %s\n", i, op, op <= IHALT ? inames[op] : "invalid op");
 	if(nprint && c->root)
 		print_node(output, c->debug[i], 1, 2);
-	if(op == ILOAD || op == ISTORE || op == ICALL || op == IJ || op == IJZ || op == IPUSH || op == IREAD) {
+	if(op == ILOAD || op == ISTORE || op == ICALL || op == IJMP || op == IJZ || op == IPUSH || op == IREAD) {
 		i++;
 		fprintf(output, "%03x: %03"PRIxPTR" data\n", i, c->m[i]);
 	}
@@ -1203,13 +1264,14 @@ int vm(code_t *c, FILE *input, FILE *output, int debug)
 		if(debug)
 			idump(c, output, debug > 1, (unsigned)(pc - m));
 		switch(op = *pc++) {
+		case INOP:                             break;
 		case ILOAD:   *++S = f; f = m[*pc++];  break;
 		case ISTORE:  m[*pc++] = f; f = *S--;  break;
 		case ICALL:   *++S = f;
 			      f = (intptr_t)(pc+1); 
 			      pc = m+*pc;              break;
 		case IRETURN: pc = (intptr_t*)f; f = *S--; break;
-		case IJ:      pc = m+*pc;              break;
+		case IJMP:    pc = m+*pc;              break;
 		case IJZ:     if(!f) pc = m+*pc; else pc++; f = *S--; break;
 		case IJNZ:    if( f) pc = m+*pc; else pc++; f = *S--; break;
 		case IADD:    f = *S-- +  f;           break;
@@ -1226,6 +1288,11 @@ int vm(code_t *c, FILE *input, FILE *output, int debug)
 		case IGT:     f = *S-- >  f;           break;
 		case IEQ:     f = *S-- == f;           break;
 		case INEQ:    f = *S-- != f;           break;
+		case IAND:    f = *S-- &  f;           break;     
+		case IOR:     f = *S-- |  f;           break;      
+		case IXOR:    f = *S-- ^  f;           break;    
+		case IINVERT: f = ~f;                  break; 
+		case INEGATE: f = -f;                  break; 
 		case IODD:    f = f & 1;               break;
 		case IPUSH:   *++S = f; f = *pc++;     break;
 		case IPOP:    f = *S--;                break;
@@ -1248,11 +1315,8 @@ code_t *process_file(FILE *input, FILE *output, int debug, int symbols)
 	if(debug)
 		print_node(output, n, 0, 0);
 	code_t *c = code(n, MAX_CORE, 1);
-	if(!c) {
-		if(!debug) /* code frees n if in debug mode */
-			free_node(n);
+	if(!c)
 		return NULL;
-	}
 	if(debug)
 		dump(c, output, debug > 1);
 	if(symbols)

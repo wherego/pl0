@@ -12,10 +12,15 @@ end;
 begin
 	z := 3;
 	do z:= z+1 while z < 10;
+	z := -z;
 	write z;
 	read z;
 	write z;
 	write x;
+	(* doesn't do anything meaning full at the moment, in fact
+	   the code generation is incorrect *)
+	z := call square, x; 
+	z := (z * z + (z - z));
 
 	(* syntax for function call arguments is non functional *)
 	call square, x;
